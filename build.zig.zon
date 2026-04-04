@@ -36,6 +36,10 @@
             .url = "git+https://github.com/facebook/yoga#main",
             .hash = "N-V-__8AAI8C1gDyi8kLQCszXVrDsJRshoD726S3vx2KA206",
         },
+        .wayland = .{
+            .url = "git+https://gitlab.freedesktop.org/wayland/wayland.git?ref=main#e647f6304d7491fa436047908dc559f5badf613e",
+            .hash = "N-V-__8AAOYnJQB7_v_8zvgC483VzXHVn_Tyc96Ax04lTxHn",
+        },
     },
     // Specifies the set of files and directories that are included in this package.
     // Only files and directories listed here are included in the `hash` that
@@ -49,6 +53,7 @@
         "build.zig",
         "build.zig.zon",
         "compositor",
+        "wayland",
         "yoga",
     },
 }
