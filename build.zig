@@ -1,5 +1,34 @@
 const std = @import("std");
 
+const CXXFLAGS = .{
+    "--std=c++20",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+};
+
+const yoga_files = .{
+    "YGConfig.cpp",
+    "YGEnums.cpp",
+    "YGNode.cpp",
+    "YGNodeLayout.cpp",
+    "YGNodeStyle.cpp",
+    "YGPixelGrid.cpp",
+    "YGValue.cpp",
+    "algorithm/AbsoluteLayout.cpp",
+    "algorithm/Baseline.cpp",
+    "algorithm/Cache.cpp",
+    "algorithm/CalculateLayout.cpp",
+    "algorithm/FlexLine.cpp",
+    "algorithm/PixelGrid.cpp",
+    "config/Config.cpp",
+    "debug/AssertFatal.cpp",
+    "debug/Log.cpp",
+    "event/event.cpp",
+    "node/LayoutResults.cpp",
+    "node/Node.cpp",
+};
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -16,29 +45,44 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
-    // It's also possible to define more custom flags to toggle optional features
-    // of this build script using `b.option()`. All defined flags (including
-    // target and optimize options) will be listed when running `zig build --help`
-    // in this directory.
 
-    // This creates a module, which represents a collection of source files alongside
-    // some compilation options, such as optimization mode and linked system libraries.
-    // Zig modules are the preferred way of making Zig code available to consumers.
-    // addModule defines a module that we intend to make available for importing
-    // to our consumers. We must give it a name because a Zig package can expose
-    // multiple modules and consumers will need to be able to specify which
-    // module they want to access.
-    const mod = b.addModule("nirvana", .{
-        // The root source file is the "entry point" of this module. Users of
-        // this module will only be able to access public declarations contained
-        // in this file, which means that if you have declarations that you
-        // intend to expose to consumers that were defined in other files part
-        // of this module, you will have to make sure to re-export them from
-        // the root file.
-        .root_source_file = b.path("compositor/root.zig"),
-        // Later on we'll use this module as the root module of a test executable
-        // which requires us to specify a target.
+    const yoga_dep = b.dependency("yoga", .{
         .target = target,
+        .optimize = optimize,
+    });
+
+    const yoga_mod = b.addModule("yoga", .{
+        .root_source_file = b.path("yoga/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libcpp = true,
+    });
+
+    const yoga_lib = b.addLibrary(.{
+        .name = "yoga",
+        .root_module = yoga_mod,
+    });
+
+    yoga_lib.addCSourceFiles(.{
+        .root = yoga_dep.path("yoga"),
+        .files = &yoga_files,
+        .flags = &CXXFLAGS,
+    });
+
+    yoga_lib.installHeadersDirectory(yoga_dep.path("yoga"), "yoga", .{
+        .include_extensions = &.{".h"},
+    });
+
+    yoga_lib.addIncludePath(yoga_dep.path(""));
+
+    b.installArtifact(yoga_lib);
+
+    const mod = b.addModule("nirvana", .{
+        .root_source_file = b.path("compositor/root.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "yoga", .module = yoga_mod },
+        },
     });
 
     // Here we define an executable. An executable needs to have a root module
