@@ -57,7 +57,8 @@ pub fn build(b: *std.Build) void {
         .root_module = yoga_mod,
     });
 
-    yoga_lib.addCSourceFiles(.{
+    // Zig 0.16 attaches C/C++ sources to the module, not the Compile step.
+    yoga_mod.addCSourceFiles(.{
         .root = yoga_dep.path("yoga"),
         .files = &yoga_files,
         .flags = &CXXFLAGS,
@@ -67,7 +68,7 @@ pub fn build(b: *std.Build) void {
         .include_extensions = &.{".h"},
     });
 
-    yoga_lib.addIncludePath(yoga_dep.path(""));
+    yoga_mod.addIncludePath(yoga_dep.path(""));
 
     b.installArtifact(yoga_lib);
 
@@ -76,14 +77,13 @@ pub fn build(b: *std.Build) void {
         .root_module = wayland_mod,
     });
 
-    wayland_lib.linkLibC();
-    wayland_lib.linkSystemLibrary("wayland-client");
-    wayland_lib.linkSystemLibrary("wayland-server");
+    wayland_mod.linkSystemLibrary("wayland-client", .{});
+    wayland_mod.linkSystemLibrary("wayland-server", .{});
 
     b.installArtifact(wayland_lib);
 
     const mod = b.addModule("nirvana", .{
-        .root_source_file = b.path("compositor/root.zig"),
+        .root_source_file = b.path("libnirvana/root.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "yoga", .module = yoga_mod },

@@ -34,7 +34,7 @@
     .dependencies = .{
         .yoga = .{
             .url = "git+https://github.com/facebook/yoga#main",
-            .hash = "N-V-__8AAI8C1gDyi8kLQCszXVrDsJRshoD726S3vx2KA206",
+            .hash = "N-V-__8AAI861gC4PTkWl6is05whFbFl0odTNO848V3cXd2o",
         },
         .wayland = .{
             .url = "git+https://gitlab.freedesktop.org/wayland/wayland.git?ref=main#e647f6304d7491fa436047908dc559f5badf613e",
@@ -53,6 +53,7 @@
         "build.zig",
         "build.zig.zon",
         "compositor",
+        "libnirvana",
         "wayland",
         "yoga",
     },
