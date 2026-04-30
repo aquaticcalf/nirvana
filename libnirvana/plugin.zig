@@ -5,17 +5,7 @@ const workspace_mod = @import("workspace.zig");
 const window_mod = @import("window.zig");
 
 pub const PluginId = u64;
-
-pub const Event = union(enum) {
-    started,
-    stopped,
-    output_added: output_mod.OutputId,
-    workspace_added: workspace_mod.WorkspaceId,
-    workspace_activated: workspace_mod.WorkspaceId,
-    window_created: window_mod.WindowId,
-    window_focused: window_mod.WindowId,
-    viewport_changed: workspace_mod.WorkspaceId,
-};
+pub const Event = compositor_mod.Event;
 
 pub const WindowSnapshot = struct {
     id: window_mod.WindowId,
@@ -84,6 +74,7 @@ pub const Host = struct {
     compositor: *compositor_mod.Compositor,
     plugins: std.ArrayList(RegisteredPlugin) = .empty,
     next_plugin_id: PluginId = 1,
+    next_event_index: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, compositor: *compositor_mod.Compositor) Host {
         return .{ .allocator = allocator, .compositor = compositor };
@@ -111,7 +102,7 @@ pub const Host = struct {
         return id;
     }
 
-    pub fn emit(self: *Host, event: Event) !void {
+    fn emit(self: *Host, event: Event) !void {
         const api = Api{ .host = self };
         for (self.plugins.items) |registered| {
             if (registered.plugin.on_event) |on_event| {
@@ -120,15 +111,23 @@ pub const Host = struct {
         }
     }
 
+    pub fn dispatchPending(self: *Host) !void {
+        while (self.next_event_index < self.compositor.events.items.len) {
+            const event = self.compositor.events.items[self.next_event_index];
+            self.next_event_index += 1;
+            try self.emit(event);
+        }
+    }
+
     pub fn createWorkspace(self: *Host, options: CreateWorkspaceOptions) !workspace_mod.WorkspaceId {
         const id = try self.compositor.createWorkspace(options);
-        try self.emit(.{ .workspace_added = id });
+        try self.dispatchPending();
         return id;
     }
 
     pub fn addOutput(self: *Host, options: output_mod.OutputOptions) !output_mod.OutputId {
         const id = try self.compositor.addOutput(options);
-        try self.emit(.{ .output_added = id });
+        try self.dispatchPending();
         return id;
     }
 
@@ -138,13 +137,13 @@ pub const Host = struct {
         options: workspace_mod.WindowOptions,
     ) !window_mod.WindowId {
         const id = try self.compositor.createWindow(workspace_id, options);
-        try self.emit(.{ .window_created = id });
+        try self.dispatchPending();
         return id;
     }
 
     pub fn activateWorkspace(self: *Host, id: workspace_mod.WorkspaceId) !bool {
-        if (!self.compositor.activateWorkspace(id)) return false;
-        try self.emit(.{ .workspace_activated = id });
+        if (!try self.compositor.activateWorkspace(id)) return false;
+        try self.dispatchPending();
         return true;
     }
 
@@ -157,8 +156,8 @@ pub const Host = struct {
     }
 
     pub fn focusWindow(self: *Host, window_id: window_mod.WindowId) bool {
-        const found = self.compositor.focusWindow(window_id);
-        if (found) self.emit(.{ .window_focused = window_id }) catch {};
+        const found = self.compositor.focusWindow(window_id) catch return false;
+        if (found) self.dispatchPending() catch return false;
         return found;
     }
 };
@@ -201,4 +200,41 @@ test "plugin can observe windows for a taskbar" {
     });
 
     try std.testing.expectEqual(@as(usize, 1), state.seen_windows);
+}
+
+test "plugin can observe compositor events created outside host helpers" {
+    const State = struct {
+        windows: usize = 0,
+
+        fn onEvent(api: Api, event: Event, userdata: ?*anyopaque) !void {
+            _ = api;
+            if (event != .window_created) return;
+            const state: *@This() = @ptrCast(@alignCast(userdata.?));
+            state.windows += 1;
+        }
+    };
+
+    var compositor_state = compositor_mod.Compositor.init(std.testing.allocator);
+    defer compositor_state.deinit();
+
+    var host = Host.init(std.testing.allocator, &compositor_state);
+    defer host.deinit();
+
+    var state = State{};
+    _ = try host.register(.{
+        .name = "observer",
+        .userdata = &state,
+        .on_event = State.onEvent,
+    });
+
+    const workspace_id = try compositor_state.createWorkspace(.{
+        .name = "desk",
+        .viewport = @import("geometry.zig").rect(0, 0, 1920, 1080),
+    });
+    _ = try compositor_state.createWindow(workspace_id, .{
+        .rect = @import("geometry.zig").rect(64, 64, 800, 600),
+    });
+
+    try host.dispatchPending();
+    try std.testing.expectEqual(@as(usize, 1), state.windows);
 }

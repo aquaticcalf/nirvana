@@ -10,10 +10,22 @@ pub const CreateWorkspaceOptions = struct {
     persistent: bool = false,
 };
 
+pub const Event = union(enum) {
+    started,
+    stopped,
+    output_added: output_mod.OutputId,
+    workspace_added: workspace_mod.WorkspaceId,
+    workspace_activated: workspace_mod.WorkspaceId,
+    window_created: window_mod.WindowId,
+    window_focused: window_mod.WindowId,
+    viewport_changed: workspace_mod.WorkspaceId,
+};
+
 pub const Compositor = struct {
     allocator: std.mem.Allocator,
     outputs: std.ArrayList(output_mod.Output) = .empty,
     workspaces: std.ArrayList(workspace_mod.Workspace) = .empty,
+    events: std.ArrayList(Event) = .empty,
     active_workspace_id: ?workspace_mod.WorkspaceId = null,
     next_output_id: output_mod.OutputId = 1,
     next_workspace_id: workspace_mod.WorkspaceId = 1,
@@ -28,6 +40,7 @@ pub const Compositor = struct {
         }
         self.workspaces.deinit(self.allocator);
         self.outputs.deinit(self.allocator);
+        self.events.deinit(self.allocator);
     }
 
     pub fn addOutput(self: *Compositor, options: output_mod.OutputOptions) !output_mod.OutputId {
@@ -42,6 +55,7 @@ pub const Compositor = struct {
             .scale = options.scale,
             .active_workspace_id = self.active_workspace_id,
         });
+        try self.recordEvent(.{ .output_added = id });
         return id;
     }
 
@@ -62,12 +76,14 @@ pub const Compositor = struct {
             }
         }
 
+        try self.recordEvent(.{ .workspace_added = id });
         return id;
     }
 
-    pub fn activateWorkspace(self: *Compositor, id: workspace_mod.WorkspaceId) bool {
+    pub fn activateWorkspace(self: *Compositor, id: workspace_mod.WorkspaceId) !bool {
         if (self.getWorkspace(id) == null) return false;
         self.active_workspace_id = id;
+        try self.recordEvent(.{ .workspace_activated = id });
         return true;
     }
 
@@ -96,10 +112,12 @@ pub const Compositor = struct {
         options: workspace_mod.WindowOptions,
     ) !window_mod.WindowId {
         const workspace = self.getWorkspace(workspace_id) orelse return error.WorkspaceNotFound;
-        return workspace.createWindow(options);
+        const id = try workspace.createWindow(options);
+        try self.recordEvent(.{ .window_created = id });
+        return id;
     }
 
-    pub fn focusWindow(self: *Compositor, window_id: window_mod.WindowId) bool {
+    pub fn focusWindow(self: *Compositor, window_id: window_mod.WindowId) !bool {
         var found = false;
         for (self.workspaces.items) |*workspace| {
             if (workspace.focusWindow(window_id)) {
@@ -107,7 +125,12 @@ pub const Compositor = struct {
                 found = true;
             }
         }
+        if (found) try self.recordEvent(.{ .window_focused = window_id });
         return found;
+    }
+
+    pub fn recordEvent(self: *Compositor, event: Event) !void {
+        try self.events.append(self.allocator, event);
     }
 
     pub fn windowCount(self: Compositor) usize {
@@ -136,6 +159,7 @@ test "compositor owns outputs and spatial workspaces" {
     });
 
     try std.testing.expect(compositor.getOutput(output_id).?.active_workspace_id == workspace_id);
-    try std.testing.expect(compositor.focusWindow(window_id));
+    try std.testing.expect(try compositor.focusWindow(window_id));
     try std.testing.expectEqual(@as(usize, 1), compositor.windowCount());
+    try std.testing.expectEqual(@as(usize, 4), compositor.events.items.len);
 }
