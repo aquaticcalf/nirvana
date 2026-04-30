@@ -1,4 +1,6 @@
 const std = @import("std");
+const compositor_mod = @import("compositor.zig");
+const output_mod = @import("output.zig");
 const workspace_mod = @import("workspace.zig");
 const window_mod = @import("window.zig");
 
@@ -7,7 +9,9 @@ pub const PluginId = u64;
 pub const Event = union(enum) {
     started,
     stopped,
+    output_added: output_mod.OutputId,
     workspace_added: workspace_mod.WorkspaceId,
+    workspace_activated: workspace_mod.WorkspaceId,
     window_created: window_mod.WindowId,
     window_focused: window_mod.WindowId,
     viewport_changed: workspace_mod.WorkspaceId,
@@ -27,15 +31,19 @@ pub const WindowSnapshot = struct {
 pub const Api = struct {
     host: *Host,
 
+    pub fn compositor(self: Api) *compositor_mod.Compositor {
+        return self.host.compositor;
+    }
+
     pub fn activeWorkspace(self: Api) ?*workspace_mod.Workspace {
-        return self.host.activeWorkspace();
+        return self.host.compositor.activeWorkspace();
     }
 
     pub fn listWindows(self: Api, allocator: std.mem.Allocator) ![]WindowSnapshot {
         var snapshots: std.ArrayList(WindowSnapshot) = .empty;
         errdefer snapshots.deinit(allocator);
 
-        for (self.host.workspaces.items) |*workspace| {
+        for (self.host.compositor.workspaces.items) |*workspace| {
             for (workspace.windows.items) |window| {
                 try snapshots.append(allocator, .{
                     .id = window.id,
@@ -73,14 +81,12 @@ const RegisteredPlugin = struct {
 
 pub const Host = struct {
     allocator: std.mem.Allocator,
-    workspaces: std.ArrayList(workspace_mod.Workspace) = .empty,
+    compositor: *compositor_mod.Compositor,
     plugins: std.ArrayList(RegisteredPlugin) = .empty,
-    active_workspace_id: ?workspace_mod.WorkspaceId = null,
     next_plugin_id: PluginId = 1,
-    next_workspace_id: workspace_mod.WorkspaceId = 1,
 
-    pub fn init(allocator: std.mem.Allocator) Host {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, compositor: *compositor_mod.Compositor) Host {
+        return .{ .allocator = allocator, .compositor = compositor };
     }
 
     pub fn deinit(self: *Host) void {
@@ -91,11 +97,6 @@ pub const Host = struct {
             }
         }
         self.plugins.deinit(self.allocator);
-
-        for (self.workspaces.items) |*workspace| {
-            workspace.deinit();
-        }
-        self.workspaces.deinit(self.allocator);
     }
 
     pub fn register(self: *Host, plugin: Plugin) !PluginId {
@@ -120,49 +121,49 @@ pub const Host = struct {
     }
 
     pub fn createWorkspace(self: *Host, options: CreateWorkspaceOptions) !workspace_mod.WorkspaceId {
-        const id = self.next_workspace_id;
-        self.next_workspace_id += 1;
-        try self.workspaces.append(self.allocator, workspace_mod.Workspace.init(self.allocator, .{
-            .id = id,
-            .name = options.name,
-            .viewport = options.viewport,
-            .persistent = options.persistent,
-        }));
-        if (self.active_workspace_id == null) self.active_workspace_id = id;
+        const id = try self.compositor.createWorkspace(options);
         try self.emit(.{ .workspace_added = id });
         return id;
     }
 
+    pub fn addOutput(self: *Host, options: output_mod.OutputOptions) !output_mod.OutputId {
+        const id = try self.compositor.addOutput(options);
+        try self.emit(.{ .output_added = id });
+        return id;
+    }
+
+    pub fn createWindow(
+        self: *Host,
+        workspace_id: workspace_mod.WorkspaceId,
+        options: workspace_mod.WindowOptions,
+    ) !window_mod.WindowId {
+        const id = try self.compositor.createWindow(workspace_id, options);
+        try self.emit(.{ .window_created = id });
+        return id;
+    }
+
+    pub fn activateWorkspace(self: *Host, id: workspace_mod.WorkspaceId) !bool {
+        if (!self.compositor.activateWorkspace(id)) return false;
+        try self.emit(.{ .workspace_activated = id });
+        return true;
+    }
+
     pub fn activeWorkspace(self: *Host) ?*workspace_mod.Workspace {
-        const id = self.active_workspace_id orelse return null;
-        return self.getWorkspace(id);
+        return self.compositor.activeWorkspace();
     }
 
     pub fn getWorkspace(self: *Host, id: workspace_mod.WorkspaceId) ?*workspace_mod.Workspace {
-        for (self.workspaces.items) |*workspace| {
-            if (workspace.id == id) return workspace;
-        }
-        return null;
+        return self.compositor.getWorkspace(id);
     }
 
     pub fn focusWindow(self: *Host, window_id: window_mod.WindowId) bool {
-        var found = false;
-        for (self.workspaces.items) |*workspace| {
-            if (workspace.focusWindow(window_id)) {
-                self.active_workspace_id = workspace.id;
-                found = true;
-            }
-        }
+        const found = self.compositor.focusWindow(window_id);
         if (found) self.emit(.{ .window_focused = window_id }) catch {};
         return found;
     }
 };
 
-pub const CreateWorkspaceOptions = struct {
-    name: []const u8,
-    viewport: @import("geometry.zig").Rect,
-    persistent: bool = false,
-};
+pub const CreateWorkspaceOptions = compositor_mod.CreateWorkspaceOptions;
 
 test "plugin can observe windows for a taskbar" {
     const TaskbarState = struct {
@@ -177,7 +178,10 @@ test "plugin can observe windows for a taskbar" {
         }
     };
 
-    var host = Host.init(std.testing.allocator);
+    var compositor_state = compositor_mod.Compositor.init(std.testing.allocator);
+    defer compositor_state.deinit();
+
+    var host = Host.init(std.testing.allocator, &compositor_state);
     defer host.deinit();
 
     var state = TaskbarState{};
@@ -191,12 +195,10 @@ test "plugin can observe windows for a taskbar" {
         .name = "desk",
         .viewport = @import("geometry.zig").rect(0, 0, 1920, 1080),
     });
-    var workspace = host.getWorkspace(workspace_id).?;
-    const window_id = try workspace.createWindow(.{
+    _ = try host.createWindow(workspace_id, .{
         .rect = @import("geometry.zig").rect(32, 32, 900, 640),
         .metadata = .{ .app_id = "term", .title = "Terminal" },
     });
-    try host.emit(.{ .window_created = window_id });
 
     try std.testing.expectEqual(@as(usize, 1), state.seen_windows);
 }
